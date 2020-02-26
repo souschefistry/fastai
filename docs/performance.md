@@ -8,14 +8,14 @@ This document will show you how to speed things up and get more out of your GPU/
 
 To check your setup for recommended performance improvements, run:
 ```
-python -c "import fastai.utils.collect_env; fastai.utils.collect_env.check_perf()"
+python -c "import fastai.utils; fastai.utils.check_perf()"
 ```
 
 ## Mixed Precision Training
 
 Combined FP16/FP32 training can tremendously improve training speed and use less GPU RAM. For theory behind it see this [thread](https://forums.fast.ai/t/mixed-precision-training/20720/3)
 
-To deploy it see [these instructions](http://docs.fast.ai/callbacks.fp16.html).
+To deploy it see [these instructions](/callbacks.fp16.html).
 
 
 
@@ -23,7 +23,7 @@ To deploy it see [these instructions](http://docs.fast.ai/callbacks.fp16.html).
 
 If you notice a bottleneck in JPEG decoding (decompression) it's enough to switch to a much faster [`libjpeg-turbo`](#libjpeg-turbo), using the normal version of `Pillow`.
 
-If you need faster image resize, blur, alpha composition, alpha premultiplication, division by alpha, grayscale and other image manipulations you need to switch to `Pillow-SIMD`](#pillow-simd).
+If you need faster image resize, blur, alpha composition, alpha premultiplication, division by alpha, grayscale and other image manipulations you need to switch to [`Pillow-SIMD`](#pillow-simd).
 
 At the moment this section is only relevant if you're on the x86 platform.
 
@@ -63,20 +63,20 @@ This section explains how to install `Pillow-SIMD` w/ `libjpeg-turbo` (but the v
 Here is the tl;dr version to install `Pillow-SIMD` w/ `libjpeg-turbo` and w/o `TIFF` support:
 
    ```
-   conda uninstall -y --force pillow pil jpeg libtiff
-   pip   uninstall -y         pillow pil jpeg libtiff
-   conda install -c conda-forge libjpeg-turbo
+   conda uninstall -y --force pillow pil jpeg libtiff libjpeg-turbo
+   pip   uninstall -y         pillow pil jpeg libtiff libjpeg-turbo
+   conda install -yc conda-forge libjpeg-turbo
    CFLAGS="${CFLAGS} -mavx2" pip install --upgrade --no-cache-dir --force-reinstall --no-binary :all: --compile pillow-simd
    conda install -y jpeg libtiff
    ```
 
 Here are the detailed instructions, with an optional `TIFF` support:
 
-1. First remove `pil`, `pillow`, `jpeg` and `libtiff` packages:
+1. First remove `pil`, `pillow`, `jpeg` and `libtiff` packages. Also remove 'libjpeg-tubo' if a previous version is installed:
 
    ```
-   conda uninstall -y --force pillow pil jpeg libtiff
-   pip   uninstall -y         pillow pil jpeg libtiff
+   conda uninstall -y --force pillow pil jpeg libtiff libjpeg-turbo
+   pip   uninstall -y         pillow pil jpeg libtiff libjpeg-turbo
    ```
    Both conda packages `jpeg` and `libjpeg-turbo` contain a `libjpeg.so` library.
    `jpeg`'s `libjpeg.so` library will be replaced later in these instructions with `libjpeg-turbo`'s one for the duration of the build.
@@ -88,7 +88,7 @@ Here are the detailed instructions, with an optional `TIFF` support:
 2. Now we are ready to replace `libjpeg` with a drop-in replacement of `libjpeg-turbo` and then replace `Pillow` with `Pillow-SIMD`:
 
    ```
-   conda install -c conda-forge libjpeg-turbo
+   conda install -yc conda-forge libjpeg-turbo
    CFLAGS="${CFLAGS} -mavx2" pip install --upgrade --no-cache-dir --force-reinstall --no-binary :all: --compile pillow-simd
    ```
    Do note that since you're building from source, you may end up not having some of the features that come with the binary `Pillow` package if the corresponding libraries aren't available on your system during the build time. For more information see: [Building from source](https://pillow.readthedocs.io/en/latest/installation.html#building-from-source).
@@ -134,7 +134,7 @@ Here are the detailed instructions, with an optional `TIFF` support:
 #### How to check whether you're running `Pillow` or `Pillow-SIMD`?
 
 ```
-python -c "from PIL import Image; print(Image.PILLOW_VERSION)"
+python -c "from fastai.utils.collect_env import pillow_version; print(pillow_version())"
 3.2.0.post3
 ```
 According to the author, if `PILLOW_VERSION` has a postfix, it is `Pillow-SIMD`. (Assuming that `Pillow` will never make a `.postX` release).
@@ -188,13 +188,16 @@ And a version-proof check:
 from PIL import features, Image
 from packaging import version
 
-if version.parse(Image.PILLOW_VERSION) >= version.parse("5.4.0"):
+try:    ver = Image.__version__     # PIL >= 7
+except: ver = Image.PILLOW_VERSION  # PIL <  7
+
+if version.parse(ver) >= version.parse("5.4.0"):
     if features.check_feature('libjpeg_turbo'):
         print("libjpeg-turbo is on")
     else:
         print("libjpeg-turbo is not on")
 else:
-    print(f"libjpeg-turbo' status can't be derived - need Pillow(-SIMD)? >= 5.4.0 to tell, current version {Image.PILLOW_VERSION}")
+    print(f"libjpeg-turbo' status can't be derived - need Pillow(-SIMD)? >= 5.4.0 to tell, current version {ver}")
 ```
 
 ### Conda packages
@@ -223,4 +226,4 @@ If you have problems with these experimental packages please post [here](https:/
 
 ## GPU Performance
 
-See [GPU Memory Notes](https://docs.fast.ai/dev/gpu.html#gpu-memory-notes).
+See [GPU Memory Notes](/dev/gpu.html#gpu-memory-notes).

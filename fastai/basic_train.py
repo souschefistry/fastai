@@ -7,7 +7,7 @@ from .utils.ipython import gpu_mem_restore
 import inspect
 from fastprogress.fastprogress import format_time, IN_NOTEBOOK
 from time import time
-from fastai.sixel import plot_sixel
+from .sixel import plot_sixel
 
 __all__ = ['Learner', 'LearnerCallback', 'Recorder', 'RecordOnCPU', 'fit', 'loss_batch', 'train_epoch', 'validate',
            'get_preds', 'load_learner']
@@ -26,7 +26,7 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
     out = model(*xb)
     out = cb_handler.on_loss_begin(out)
 
-    if not loss_func: return to_detach(out), yb[0].detach()
+    if not loss_func: return to_detach(out), to_detach(yb[0])
     loss = loss_func(out, *yb)
 
     if opt is not None:
@@ -40,7 +40,7 @@ def loss_batch(model:nn.Module, xb:Tensor, yb:Tensor, loss_func:OptLossFunc=None
 def get_preds(model:nn.Module, dl:DataLoader, pbar:Optional[PBar]=None, cb_handler:Optional[CallbackHandler]=None,
               activ:nn.Module=None, loss_func:OptLossFunc=None, n_batch:Optional[int]=None) -> List[Tensor]:
     "Tuple of predictions and targets, and optional losses (if `loss_func`) using `dl`, max batches `n_batch`."
-    res = [torch.cat(o).cpu() for o in
+    res = [to_float(torch.cat(o).cpu()) for o in
            zip(*validate(model, dl, cb_handler=cb_handler, pbar=pbar, average=False, n_batch=n_batch))]
     if loss_func is not None:
         with NoneReduceOnCPU(loss_func) as lf: res.append(lf(res[0], res[1]))
@@ -59,7 +59,7 @@ def validate(model:nn.Module, dl:DataLoader, loss_func:OptLossFunc=None, cb_hand
             val_loss = loss_batch(model, xb, yb, loss_func, cb_handler=cb_handler)
             val_losses.append(val_loss)
             if not is_listy(yb): yb = [yb]
-            nums.append(yb[0].shape[0])
+            nums.append(first_el(yb).shape[0])
             if cb_handler and cb_handler.on_batch_end(val_losses[-1]): break
             if n_batch and (len(nums)>=n_batch): break
         nums = np.array(nums, dtype=np.float32)
@@ -162,7 +162,6 @@ class Learner():
     def __post_init__(self)->None:
         "Setup path,metrics, callbacks and ensure model directory exists."
         self.path = Path(ifnone(self.path, self.data.path))
-        (self.path/self.model_dir).mkdir(parents=True, exist_ok=True)
         self.model = self.model.to(self.data.device)
         self.loss_func = self.loss_func or self.data.loss_func
         self.metrics=listify(self.metrics)
@@ -170,12 +169,15 @@ class Learner():
         self.callbacks = listify(self.callbacks)
         if self.silent is None: self.silent = defaults.silent
         self.callback_fns = [partial(Recorder, add_time=self.add_time, silent=self.silent)] + listify(self.callback_fns)
+        if defaults.extra_callbacks is not None: self.callbacks += defaults.extra_callbacks
 
     def init(self, init): apply_init(self.model, init)
 
     def _test_writeable_path(self):
         path = self.path/self.model_dir
-        try: tmp_file = get_tmp_file(path)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            tmp_file = get_tmp_file(path)
         except OSError as e:
             raise Exception(f"{e}\nCan't write to '{path}', set `learn.model_dir` attribute in Learner to a full libpath path that is writable") from None
         os.remove(tmp_file)
@@ -195,7 +197,6 @@ class Learner():
         if not getattr(self, 'opt', False): self.create_opt(lr, wd)
         else: self.opt.lr,self.opt.wd = lr,wd
         callbacks = [cb(self) for cb in self.callback_fns + listify(defaults.extra_callback_fns)] + listify(callbacks)
-        if defaults.extra_callbacks is not None: callbacks += defaults.extra_callbacks
         fit(epochs, self, metrics=self.metrics, callbacks=self.callbacks+callbacks)
 
     def create_opt(self, lr:Floats, wd:Floats=0.)->None:
@@ -210,6 +211,7 @@ class Learner():
 
     def freeze_to(self, n:int)->None:
         "Freeze layers up to layer group `n`."
+        if hasattr(self.model, 'reset'): self.model.reset()
         for g in self.layer_groups[:n]:
             for l in g:
                 if not self.train_bn or not isinstance(l, bn_types): requires_grad(l, False)
@@ -220,12 +222,10 @@ class Learner():
         "Freeze up to last layer group."
         assert(len(self.layer_groups)>1)
         self.freeze_to(-1)
-        self.create_opt(defaults.lr)
 
     def unfreeze(self):
         "Unfreeze entire model."
         self.freeze_to(0)
-        self.create_opt(defaults.lr)
 
     def export(self, file:PathLikeOrBinaryStream='export.pkl', destroy=False):
         "Export the state of the `Learner` in `self.path/file`. `file` can be file-like (file or buffer)"
@@ -259,12 +259,13 @@ class Learner():
         return self.data.dl(ds_type)
 
     def load(self, file:PathLikeOrBinaryStream=None, device:torch.device=None, strict:bool=True,
-             with_opt:bool=None, purge:bool=True, remove_module:bool=False):
+             with_opt:bool=None, purge:bool=False, remove_module:bool=False)->'Learner':
         "Load model and optimizer state (if `with_opt`) `file` from `self.model_dir` using `device`. `file` can be file-like (file or buffer)"
         if purge: self.purge(clear_opt=ifnone(with_opt, False))
         if device is None: device = self.data.device
         elif isinstance(device, int): device = torch.device('cuda', device)
         source = self.path/self.model_dir/f'{file}.pth' if is_pathlike(file) else file
+        distrib_barrier()
         state = torch.load(source, map_location=device)
         if set(state.keys()) == {'model', 'opt'}:
             model_state = state['model']
@@ -329,21 +330,28 @@ class Learner():
         gc.collect()
         return self
 
-    def get_preds(self, ds_type:DatasetType=DatasetType.Valid, with_loss:bool=False, n_batch:Optional[int]=None,
-                  pbar:Optional[PBar]=None) -> List[Tensor]:
+    def get_preds(self, ds_type:DatasetType=DatasetType.Valid, activ:nn.Module=None,
+                  with_loss:bool=False, n_batch:Optional[int]=None, pbar:Optional[PBar]=None) -> List[Tensor]:
         "Return predictions and targets on `ds_type` dataset."
         lf = self.loss_func if with_loss else None
-        return get_preds(self.model, self.dl(ds_type), cb_handler=CallbackHandler(self.callbacks),
-                         activ=_loss_func2activ(self.loss_func), loss_func=lf, n_batch=n_batch, pbar=pbar)
+        activ = ifnone(activ, _loss_func2activ(self.loss_func))
+        if not getattr(self, 'opt', False): self.create_opt(defaults.lr, self.wd)
+        callbacks = [cb(self) for cb in self.callback_fns + listify(defaults.extra_callback_fns)] + listify(self.callbacks)
+        return get_preds(self.model, self.dl(ds_type), cb_handler=CallbackHandler(callbacks),
+                         activ=activ, loss_func=lf, n_batch=n_batch, pbar=pbar)
 
-    def pred_batch(self, ds_type:DatasetType=DatasetType.Valid, batch:Tuple=None, reconstruct:bool=False) -> List[Tensor]:
+    def pred_batch(self, ds_type:DatasetType=DatasetType.Valid, batch:Tuple=None, reconstruct:bool=False,
+                   with_dropout:bool=False, activ:nn.Module=None) -> List[Tensor]:
         "Return output of the model on one batch from `ds_type` dataset."
         if batch is not None: xb,yb = batch
         else: xb,yb = self.data.one_batch(ds_type, detach=False, denorm=False)
         cb_handler = CallbackHandler(self.callbacks)
         xb,yb = cb_handler.on_batch_begin(xb,yb, train=False)
-        preds = loss_batch(self.model.eval(), xb, yb, cb_handler=cb_handler)
-        res = _loss_func2activ(self.loss_func)(preds[0])
+        activ = ifnone(activ, _loss_func2activ(self.loss_func))
+        with torch.no_grad():
+            if not with_dropout: preds = loss_batch(self.model.eval(), xb, yb, cb_handler=cb_handler)
+            else: preds = loss_batch(self.model.eval().apply(self.apply_dropout), xb, yb, cb_handler=cb_handler)
+            res = activ(preds[0])
         if not reconstruct: return res
         res = res.detach().cpu()
         ds = self.dl(ds_type).dataset
@@ -359,26 +367,27 @@ class Learner():
                           cb_handler=CallbackHandler(self.callbacks))
         return loss
 
-    def predict(self, item:ItemBase, **kwargs):
+    def predict(self, item:ItemBase, return_x:bool=False, batch_first:bool=True, with_dropout:bool=False, **kwargs):
         "Return predicted class, label and probabilities for `item`."
         batch = self.data.one_item(item)
-        res = self.pred_batch(batch=batch)
-        pred,x = grab_idx(res,0),batch[0]
+        res = self.pred_batch(batch=batch, with_dropout=with_dropout)
+        raw_pred,x = grab_idx(res,0,batch_first=batch_first),batch[0]
         norm = getattr(self.data,'norm',False)
         if norm:
             x = self.data.denorm(x)
-            if norm.keywords.get('do_y',False): pred = self.data.denorm(pred)
+            if norm.keywords.get('do_y',False): raw_pred = self.data.denorm(raw_pred)
         ds = self.data.single_ds
-        pred = ds.y.analyze_pred(pred, **kwargs)
-        out = ds.y.reconstruct(pred, ds.x.reconstruct(item.data)) if has_arg(ds.y.reconstruct, 'x') else ds.y.reconstruct(pred)
-        return out, pred, res[0]
+        pred = ds.y.analyze_pred(raw_pred, **kwargs)
+        x = ds.x.reconstruct(grab_idx(x, 0))
+        y = ds.y.reconstruct(pred, x) if has_arg(ds.y.reconstruct, 'x') else ds.y.reconstruct(pred)
+        return (x, y, pred, raw_pred) if return_x else (y, pred, raw_pred)
 
     def validate(self, dl=None, callbacks=None, metrics=None):
         "Validate on `dl` with potential `callbacks` and `metrics`."
         dl = ifnone(dl, self.data.valid_dl)
         metrics = ifnone(metrics, self.metrics)
         cb_handler = CallbackHandler(self.callbacks + ifnone(callbacks, []), metrics)
-        cb_handler.on_epoch_begin()
+        cb_handler.on_train_begin(1, None, metrics); cb_handler.on_epoch_begin()
         val_metrics = validate(self.model, dl, self.loss_func, cb_handler)
         cb_handler.on_epoch_end(val_metrics)
         return cb_handler.state_dict['last_metrics']
@@ -411,6 +420,14 @@ class Learner():
             zs = [ds.y.reconstruct(z) for z in preds]
         ds.x.show_xyzs(xs, ys, zs, **kwargs)
 
+    def apply_dropout(self, m):
+        "If a module contains 'dropout' in it's name, it will be switched to .train() mode."
+        if 'dropout' in m.__class__.__name__.lower(): m.train()
+
+    def predict_with_mc_dropout(self, item:ItemBase, with_dropout:bool=True, n_times=10, **kwargs):
+        "Make predictions with dropout turned on for n_times (default 10)."
+        return [self.predict(item, with_dropout=with_dropout) for _ in range(n_times)]
+
 class RecordOnCPU(Callback):
     "Store the `input` and `target` going through the model on the CPU."
     def on_batch_begin(self, last_input,last_target,**kwargs):
@@ -439,6 +456,7 @@ class Recorder(LearnerCallback):
     _order=-10
     def __init__(self, learn:Learner, add_time:bool=True, silent:bool=False):
         super().__init__(learn)
+        if not getattr(self.learn, 'opt', False): self.learn.create_opt(defaults.lr, self.learn.wd)
         self.opt = self.learn.opt
         self.train_dl = self.learn.data.train_dl
         self.no_val,self.silent,self.add_time = False,silent,add_time
@@ -448,8 +466,8 @@ class Recorder(LearnerCallback):
         self.pbar = pbar
         self.names = ['epoch', 'train_loss'] if self.no_val else ['epoch', 'train_loss', 'valid_loss']
         self.metrics_names = metrics_names
+        if hasattr(self, '_added_met_names'): self.metrics_names += self._added_met_names
         self.names += self.metrics_names
-        if hasattr(self, '_added_met_names'): self.names += self._added_met_names
         if self.add_time: self.names.append('time')
         if not self.silent: self.pbar.write(self.names, table=True)
         self.losses,self.val_losses,self.lrs,self.moms,self.metrics,self.nb_batches = [],[],[],[],[],[]
@@ -470,7 +488,7 @@ class Recorder(LearnerCallback):
             self.pbar.child.comment = f'{smooth_loss:.4f}'
 
     def on_epoch_end(self, epoch:int, num_batch:int, smooth_loss:Tensor,
-                     last_metrics=MetricsList, **kwargs:Any)->bool:
+                     last_metrics:MetricsList, **kwargs:Any)->bool:
         "Save epoch info: num_batch, smooth_loss, metrics."
         self.nb_batches.append(num_batch)
         if last_metrics is not None: self.val_losses.append(last_metrics[0])
@@ -540,6 +558,8 @@ class Recorder(LearnerCallback):
             print(f"Min numerical gradient: {lrs[mg]:.2E}")
             ax.plot(lrs[mg],losses[mg],markersize=10,marker='o',color='red')
             self.min_grad_lr = lrs[mg]
+            ml = np.argmin(losses)
+            print(f"Min loss divided by 10: {lrs[ml]/10:.2E}")
         if ifnone(return_fig, defaults.return_fig): return fig
         if not IN_NOTEBOOK: plot_sixel(fig)
 
@@ -569,7 +589,7 @@ class Recorder(LearnerCallback):
             values = self._split_list_val(values, skip_start, skip_end)
             ax.plot(val_iter, values)
             ax.set_ylabel(str(self.metrics_names[i]))
-            ax.set_xlabel('Batches processed')             
+            ax.set_xlabel('Batches processed')
         if ifnone(return_fig, defaults.return_fig): return fig
         if not IN_NOTEBOOK: plot_sixel(fig)
 
@@ -592,13 +612,13 @@ def load_callback(class_func, state, learn:Learner):
     for k,v in others.items(): setattr(res, k, v)
     return res
 
-def load_learner(path:PathOrStr, file:PathLikeOrBinaryStream='export.pkl', test:ItemList=None, **db_kwargs):
+def load_learner(path:PathOrStr, file:PathLikeOrBinaryStream='export.pkl', test:ItemList=None, tfm_y=None, **db_kwargs):
     "Load a `Learner` object saved with `export_state` in `path/file` with empty data, optionally add `test` and load on `cpu`. `file` can be file-like (file or buffer)"
     source = Path(path)/file if is_pathlike(file) else file
     state = torch.load(source, map_location='cpu') if defaults.device == torch.device('cpu') else torch.load(source)
     model = state.pop('model')
     src = LabelLists.load_state(path, state.pop('data'))
-    if test is not None: src.add_test(test)
+    if test is not None: src.add_test(test, tfm_y=tfm_y)
     data = src.databunch(**db_kwargs)
     cb_state = state.pop('cb_state')
     clas_func = state.pop('cls')

@@ -87,16 +87,6 @@ def test_purge():
     learn.purge()
     learn.model_dir = model_dir_orig
 
-    # should fail to purge with a non-existent path
-    learn.model_dir = "lkjasdjssdlj"
-    try: learn.purge()
-    except Exception as e:
-        assert "Can't write to" in str(e) # should fail
-    else: assert False, "should have failed with non-writable path"
-
-    finally: # restore the learner fixture
-        learn.model_dir = model_dir_orig
-
 def test_save_load(learn):
     this_tests(learn.save, learn.load, learn.purge)
     name = 'mnist-tiny-test-save-load'

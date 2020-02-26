@@ -6,12 +6,124 @@ Most recent releases are shown at the top. Each release shows:
 - **Changed**: Additional parameters, changes to inputs or outputs, etc
 - **Fixed**: Bug fixes that don't change documented behaviour
 
-Note that the top-most release is changes in the unreleased master branch on
+Note that the top-most release changes in the unreleased master branch on
 Github. Parentheses after an item show the name or github id of the contributor
 of that change.
 
 
-## 1.0.52.dev0 (Work In Progress)
+## 1.0.61.dev0 (Work In Progress)
+
+### New:
+
+### Changed:
+
+### Fixed:
+
+
+
+## 1.0.60 (2019-12-28)
+
+### New:
+
+### Changed:
+
+### Fixed:
+
+
+
+## 1.0.59 (2019-10-26)
+
+### New:
+
+### Changed:
+
+### Fixed:
+
+`Learner.get_preds` and `Learner.TTA` now work in FP16
+
+
+## 1.0.58 (2019-09-29)
+
+### New:
+
+### Changed:
+
+- `MultiLabelFbeta` isn't a `LearnerCallback` anymore and can be passed as a metric.
+
+### Fixed:
+
+- `typing` removed as a dep since it's done nothing since py34 and we require py35+.
+
+## 1.0.57 (2019-08-09)
+
+### New:
+
+### Changed:
+
+### Fixed:
+
+
+
+## 1.0.56 (2019-08-06)
+
+### New:
+
+- QRNNs now work in mixed precision and can be twice as fast on a modern GPU (if all dims are multiples of 8)
+
+### Changed:
+
+### Fixed:
+
+
+
+## 1.0.55 (2019-07-11)
+
+### New:
+
+### Changed:
+
+### Fixed:
+
+
+
+## 1.0.54 (2019-06-19)
+
+### New:
+
+- `torch_core.Module` is a replacement for `nn.Module` that doesn't require calling `super().__init__`
+- `torch_core.Module` is implemented using new metaclass `PrePostInit` which will call
+  optional `__pre_init__` and `__post_init__` methods
+
+## 1.0.53 (2019-06-10)
+
+### Breaking changes:
+
+- In the AWD-LSTM default config, the default embedding size is now 1152, for
+  faster fp16 training. New pretrained models have been released accordingly,
+  the old pretrained model (with embedding size of 1150) is still available at 
+  https://s3.amazonaws.com/fast-ai-modelzoo/wt103-1.tgz
+
+### New:
+
+- sentencepiece tokenizer in fastai.text via `SPProcessor`
+- a backward pretrained model for NLP (automatically used if the databunch was
+  created via the datablock API using `backwards=True`)
+- `bunzip(fn:PathOrStr)`: bunzip a file
+- `working_directory`: context manager to change to a directory and return to original directory when done
+- `np_func`: decorator for creating metrics from numpy functions
+
+### Changed:
+
+- a `Vocab` is either exactly of size `max_vocab` or a size that is a multiple of 8. This coupled with the breaking
+change of embedding size 1152 (also a multiple of 8) allows a speed-up of 2 to 3 when training a language model
+in mixed precision.
+
+### Fixed:
+
+- `get_language_model`: `pretrained_fnames` no longer requires `pretrained` be `False`
+
+
+## 1.0.52 (2019-04-26)
 
 ### New:
 
@@ -134,7 +246,7 @@ of that change.
 - Added `XResNet`, which is ResNet plus tricks from
   [Bag of Tricks for Image Classification](https://arxiv.org/abs/1812.01187).
   Note pretrained models not available yet for this architecture.
-- `TextClassificationInterpretation`, which computes intrisic attention to give some interpretation of classification
+- `TextClassificationInterpretation`, which computes intrinsic attention to give some interpretation of classification
   results in text (thanks to herrmann)
 - `add_cyclical_datepart`, which add the dateparts as cosine embeddings in tabular data (thanks to herrmann)
 - `MixedItemList` two mix several kinds of `ItemList` together

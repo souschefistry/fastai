@@ -3,10 +3,11 @@ import math, matplotlib.pyplot as plt, numpy as np, pandas as pd, random
 import scipy.stats, scipy.special
 import abc, collections, hashlib, itertools, json, operator, pathlib
 import mimetypes, inspect, typing, functools, importlib, weakref
-import html, re, requests, tarfile, numbers, tempfile
+import html, re, requests, tarfile, numbers, tempfile, bz2
 
 from abc import abstractmethod, abstractproperty
-from collections import abc,  Counter, defaultdict, Iterable, namedtuple, OrderedDict
+from collections import Counter, defaultdict, namedtuple, OrderedDict
+from collections.abc import Iterable
 import concurrent
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from copy import copy, deepcopy
@@ -26,7 +27,7 @@ from pandas import Series, DataFrame
 from io import BufferedWriter, BytesIO
 
 import pkg_resources
-pkg_resources.require("fastprogress>=0.1.19")
+pkg_resources.require("fastprogress>=0.2.1")
 from fastprogress.fastprogress import master_bar, progress_bar
 
 #for type annotations
@@ -34,6 +35,9 @@ from numbers import Number
 from typing import Any, AnyStr, Callable, Collection, Dict, Hashable, Iterator, List, Mapping, NewType, Optional
 from typing import Sequence, Tuple, TypeVar, Union
 from types import SimpleNamespace
+
+def pd_max_colwidth(): return None if pd.__version__ >= "1.0.0" else -1
+
 
 def try_import(module):
     "Try to import `module`. Returns module's object on success, None on failure"

@@ -2,12 +2,13 @@
 from .torch_core import *
 from .callback import *
 from .layers import *
+from .basic_train import LearnerCallback
 
 __all__ = ['error_rate', 'accuracy', 'accuracy_thresh', 'dice', 'exp_rmspe', 'fbeta','FBeta', 'mse', 'mean_squared_error',
             'mae', 'mean_absolute_error', 'rmse', 'root_mean_squared_error', 'msle', 'mean_squared_logarithmic_error',
             'explained_variance', 'r2_score', 'top_k_accuracy', 'KappaScore', 'ConfusionMatrix', 'MatthewsCorreff',
             'Precision', 'Recall', 'R2Score', 'ExplainedVariance', 'ExpRMSPE', 'RMSE', 'Perplexity', 'AUROC', 'auc_roc_score', 
-            'roc_curve']
+            'roc_curve', 'MultiLabelFbeta', 'foreground_acc']
 
 def fbeta(y_pred:Tensor, y_true:Tensor, thresh:float=0.2, beta:float=2, eps:float=1e-9, sigmoid:bool=True)->Rank0Tensor:
     "Computes the f_beta between `preds` and `targets`"
@@ -22,16 +23,16 @@ def fbeta(y_pred:Tensor, y_true:Tensor, thresh:float=0.2, beta:float=2, eps:floa
     return res.mean()
 
 def accuracy(input:Tensor, targs:Tensor)->Rank0Tensor:
-    "Compute accuracy with `targs` when `input` is bs * n_classes."
+    "Computes accuracy with `targs` when `input` is bs * n_classes."
     n = targs.shape[0]
     input = input.argmax(dim=-1).view(n,-1)
     targs = targs.view(n,-1)
     return (input==targs).float().mean()
 
 def accuracy_thresh(y_pred:Tensor, y_true:Tensor, thresh:float=0.5, sigmoid:bool=True)->Rank0Tensor:
-    "Compute accuracy when `y_pred` and `y_true` are the same size."
+    "Computes accuracy when `y_pred` and `y_true` are the same size."
     if sigmoid: y_pred = y_pred.sigmoid()
-    return ((y_pred>thresh)==y_true.byte()).float().mean()
+    return ((y_pred>thresh).byte()==y_true.byte()).float().mean()
 
 def top_k_accuracy(input:Tensor, targs:Tensor, k:int=5)->Rank0Tensor:
     "Computes the Top-k accuracy (target is in the top k predictions)."
@@ -39,19 +40,30 @@ def top_k_accuracy(input:Tensor, targs:Tensor, k:int=5)->Rank0Tensor:
     targs = targs.unsqueeze(dim=-1).expand_as(input)
     return (input == targs).max(dim=-1)[0].float().mean()
 
+def foreground_acc(input, target, void_code):
+    "Computes non-background accuracy, e.g. camvid for multiclass segmentation"
+    target = target.squeeze(1)
+    mask = target != void_code
+    return (input.argmax(dim=1)[mask]==target[mask]).float().mean()
+
 def error_rate(input:Tensor, targs:Tensor)->Rank0Tensor:
     "1 - `accuracy`"
     return 1 - accuracy(input, targs)
 
-def dice(input:Tensor, targs:Tensor, iou:bool=False)->Rank0Tensor:
+def dice(input:Tensor, targs:Tensor, iou:bool=False, eps:float=1e-8)->Rank0Tensor:
     "Dice coefficient metric for binary target. If iou=True, returns iou metric, classic for segmentation problems."
     n = targs.shape[0]
     input = input.argmax(dim=1).view(n,-1)
     targs = targs.view(n,-1)
-    intersect = (input * targs).sum().float()
-    union = (input+targs).sum().float()
-    if not iou: return (2. * intersect / union if union > 0 else union.new([1.]).squeeze())
-    else: return intersect / (union-intersect+1.0)
+    intersect = (input * targs).sum(dim=1).float()
+    union = (input+targs).sum(dim=1).float()
+    if not iou: l = 2. * intersect / union
+    else: l = intersect / (union-intersect+eps)
+    l[union == 0.] = 1.
+    return l.mean()
+
+def psnr(input:Tensor, targs:Tensor)->Rank0Tensor:
+    return 10 * (1. / mean_squared_error(input, targs)).log10()
 
 def exp_rmspe(pred:Tensor, targ:Tensor)->Rank0Tensor:
     "Exp RMSE between `pred` and `targ`."
@@ -104,22 +116,22 @@ class RegMetrics(Callback):
         self.targs = torch.cat((self.targs, last_target.cpu()))
 
 class R2Score(RegMetrics):
-    "Compute the R2 score (coefficient of determination)."
+    "Computes the R2 score (coefficient of determination)."
     def on_epoch_end(self, last_metrics, **kwargs):
         return add_metrics(last_metrics, r2_score(self.preds, self.targs))
 
 class ExplainedVariance(RegMetrics):
-    "Compute the explained variance."
+    "Computes the explained variance."
     def on_epoch_end(self, last_metrics, **kwargs):
         return add_metrics(last_metrics, explained_variance(self.preds, self.targs))
 
 class RMSE(RegMetrics):
-    "Compute the root mean squared error."
+    "Computes the root mean squared error."
     def on_epoch_end(self, last_metrics, **kwargs):
         return add_metrics(last_metrics, root_mean_squared_error(self.preds, self.targs))
 
 class ExpRMSPE(RegMetrics):
-    "Compute the exponential of the root mean square error."
+    "Computes the exponential of the root mean square error."
     def on_epoch_end(self, last_metrics, **kwargs):
         return add_metrics(last_metrics, exp_rmspe(self.preds, self.targs))
 
@@ -189,18 +201,18 @@ class CMScores(ConfusionMatrix):
 
 
 class Recall(CMScores):
-    "Compute the Recall."
+    "Computes the Recall."
     def on_epoch_end(self, last_metrics, **kwargs): 
         return add_metrics(last_metrics, self._recall())
 
 class Precision(CMScores):
-    "Compute the Precision."
+    "Computes the Precision."
     def on_epoch_end(self, last_metrics, **kwargs): 
         return add_metrics(last_metrics, self._precision())
 
 @dataclass
 class FBeta(CMScores):
-    "Compute the F`beta` score."
+    "Computes the F`beta` score."
     beta:float=2
 
     def on_train_begin(self, **kwargs):
@@ -221,7 +233,7 @@ class FBeta(CMScores):
 
 @dataclass
 class KappaScore(ConfusionMatrix):
-    "Compute the rate of agreement (Cohens Kappa)."
+    "Computes the rate of agreement (Cohens Kappa)."
     weights:Optional[str]=None      # None, `linear`, or `quadratic`
 
     def on_epoch_end(self, last_metrics, **kwargs):
@@ -241,7 +253,7 @@ class KappaScore(ConfusionMatrix):
 
 @dataclass
 class MatthewsCorreff(ConfusionMatrix):
-    "Compute the Matthews correlation coefficient."
+    "Computes the Matthews correlation coefficient."
     def on_epoch_end(self, last_metrics, **kwargs):
         t_sum = self.cm.sum(dim=1)
         p_sum = self.cm.sum(dim=0)
@@ -264,7 +276,7 @@ class Perplexity(Callback):
         return add_metrics(last_metrics, torch.exp(self.loss / self.len))
 
 def auc_roc_score(input:Tensor, targ:Tensor):
-    "Using trapezoid method to calculate the area under roc curve"
+    "Computes the area under the receiver operator characteristic (ROC) curve using the trapezoid method. Restricted binary classification tasks."
     fpr, tpr = roc_curve(input, targ)
     d = fpr[1:] - fpr[:-1]
     sl1, sl2 = [slice(None)], [slice(None)]
@@ -272,7 +284,7 @@ def auc_roc_score(input:Tensor, targ:Tensor):
     return (d * (tpr[tuple(sl1)] + tpr[tuple(sl2)]) / 2.).sum(-1)
 
 def roc_curve(input:Tensor, targ:Tensor):
-    "Returns the false positive and true positive rates"
+    "Computes the receiver operator characteristic (ROC) curve by determining the true positive ratio (TPR) and false positive ratio (FPR) for various classification thresholds. Restricted binary classification tasks."
     targ = (targ == 1)
     desc_score_indices = torch.flip(input.argsort(-1), [-1])
     input = input[desc_score_indices]
@@ -283,14 +295,15 @@ def roc_curve(input:Tensor, targ:Tensor):
     tps = torch.cumsum(targ * 1, dim=-1)[threshold_idxs]
     fps = (1 + threshold_idxs - tps)
     if tps[0] != 0 or fps[0] != 0:
-        fps = torch.cat((LongTensor([0]), fps))
-        tps = torch.cat((LongTensor([0]), tps))
+        zer = fps.new_zeros(1)
+        fps = torch.cat((zer, fps))
+        tps = torch.cat((zer, tps))
     fpr, tpr = fps.float() / fps[-1], tps.float() / tps[-1]
     return fpr, tpr
 
 @dataclass
 class AUROC(Callback):
-    "Calculate the auc score based on the roc curve. Restricted to the binary classification task."
+    "Computes the area under the curve (AUC) score based on the receiver operator characteristic (ROC) curve. Restricted to binary classification tasks."
     def on_epoch_begin(self, **kwargs):
         self.targs, self.preds = LongTensor([]), Tensor([])
         
@@ -301,3 +314,42 @@ class AUROC(Callback):
     
     def on_epoch_end(self, last_metrics, **kwargs):
         return add_metrics(last_metrics, auc_roc_score(self.preds, self.targs))
+
+class MultiLabelFbeta(Callback):
+    "Computes the fbeta score for multilabel classification"
+    # https://scikit-learn.org/stable/modules/generated/sklearn.metrics.f1_score.html
+    _order = -20 
+    def __init__(self, beta=2, eps=1e-15, thresh=0.3, sigmoid=True, average="micro"):
+        self.eps,self.thresh,self.sigmoid,self.average,self.beta = eps,thresh,sigmoid,average,beta
+
+    def on_epoch_begin(self, **kwargs):
+        self.tp,self.total_pred,self.total_targ = 0,0,0
+    
+    def on_batch_end(self, last_output, last_target, **kwargs):
+        pred, targ = ((last_output.sigmoid() if self.sigmoid else last_output) > self.thresh).byte(), last_target.byte()
+        m = pred*targ
+        self.tp += m.sum(0).float()
+        self.total_pred += pred.sum(0).float()
+        self.total_targ += targ.sum(0).float()
+    
+    def fbeta_score(self, precision, recall):
+        beta2 = self.beta**2
+        return (1 + beta2)*(precision*recall)/((beta2*precision + recall) + self.eps)
+
+    def on_epoch_end(self, last_metrics, **kwargs):
+        self.total_pred += self.eps
+        self.total_targ += self.eps
+        if self.average == "micro":
+            precision, recall = self.tp.sum() / self.total_pred.sum(), self.tp.sum() / self.total_targ.sum()
+            res = self.fbeta_score(precision, recall)
+        elif self.average == "macro":
+            res = self.fbeta_score((self.tp / self.total_pred), (self.tp / self.total_targ)).mean()
+        elif self.average == "weighted":
+            scores = self.fbeta_score((self.tp / self.total_pred), (self.tp / self.total_targ))
+            res = (scores*self.total_targ).sum() / self.total_targ.sum()
+        elif self.average == "none":
+            res = listify(self.fbeta_score((self.tp / self.total_pred), (self.tp / self.total_targ)))
+        else:
+            raise Exception("Choose one of the average types: [micro, macro, weighted, none]")
+        
+        return add_metrics(last_metrics, res)

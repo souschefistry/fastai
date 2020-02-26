@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch
 import math
 import torch.utils.model_zoo as model_zoo
+from ...torch_core import Module
 
 __all__ = ['PResNet', 'presnet18', 'presnet34', 'presnet50', 'presnet101', 'presnet152']
 
@@ -29,7 +30,7 @@ def conv_layer(conv_1st, ni, nf, ks=3, stride=1, zero_bn=False, bias=False):
 def conv_act(*args, **kwargs): return conv_layer(True , *args, **kwargs)
 def act_conv(*args, **kwargs): return conv_layer(False, *args, **kwargs)
 
-class BasicBlock(nn.Module):
+class BasicBlock(Module):
     expansion = 1
 
     def __init__(self, ni, nf, stride=1, downsample=None):
@@ -46,7 +47,7 @@ class BasicBlock(nn.Module):
         x += identity
         return x
 
-class Bottleneck(nn.Module):
+class Bottleneck(Module):
     expansion = 4
 
     def __init__(self, ni, nf, stride=1, downsample=None):
@@ -65,7 +66,7 @@ class Bottleneck(nn.Module):
         x += identity
         return x
 
-class PResNet(nn.Module):
+class PResNet(Module):
 
     def __init__(self, block, layers, num_classes=1000):
         self.ni = 64
